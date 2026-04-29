@@ -22,46 +22,6 @@ with open(META_PATH, "r", encoding="utf-8") as f:
     metadata = json.load(f)
 print(f"Готово. Чанков в индексе: {index.ntotal}")
 
-# ---------- Функция пост-проверки ----------
-def sanitize_response(text: str) -> str:
-    """
-    Проверяет ответ модели на наличие конфиденциальных данных
-    или внутренних команд. При обнаружении возвращает сообщение безопасности.
-    """
-    # Список триггерных слов (регистронезависимый поиск)
-    forbidden_words = [
-        "пароль", "password", "секретный ключ", "secret key",
-        "api_key", "внутренняя инструкция", "internal instruction",
-        "personal data", "персональные данные", "конфиденциально",
-        "classified", "не для распространения"
-    ]
-    
-    # Паттерны для обнаружения prompt injection
-    injection_patterns = [
-        r"ignore\s+previous\s+instructions",
-        r"ignore\s+above\s+instructions",
-        r"system\s*:\s*",
-        r"\[system\].*?\[/system\]",
-        r"admin\s*>>",
-        r"\baccess\s+granted\b"
-    ]
-    
-    text_lower = text.lower()
-    
-    # Проверяем стоп-слова
-    for word in forbidden_words:
-        if word in text_lower:
-            return (f"⚠️ Ответ отфильтрован: в нём обнаружено запрещённое слово '{word}'. "
-                    "По соображениям безопасности ответ не может быть показан.")
-    
-    # Проверяем инъекции
-    for pattern in injection_patterns:
-        if re.search(pattern, text, re.IGNORECASE):
-            return (f"⚠️ Ответ отфильтрован: обнаружены признаки внутренней команды. "
-                    "Показ ответа запрещён.")
-    
-    # Если всё чисто – возвращаем исходный текст
-    return text
 
 # ================= ФУНКЦИЯ ПОЛУЧЕНИЯ ЭМБЕДДИНГА =================
 def get_embedding(text: str, prefix: str = EMBED_PREFIX_QUERY) -> np.ndarray:
@@ -149,6 +109,10 @@ def ask_llm(messages):
     return response.json()["choices"][0]["message"]["content"]
 
 # ================= ИНТЕРАКТИВНЫЙ ЦИКЛ =================
+from logger import log_request
+
+THRESHOLD = 0.5   # порог косинусного сходства для "найден чанк"
+
 def main():
     print("\n🏀 RAG-бот НБА-новостей готов. Введите вопрос (или 'выход' для завершения).")
     while True:
@@ -163,28 +127,34 @@ def main():
             continue
 
         # 1. Поиск в FAISS
-        results = search(query)
+        results = search(query)  # возвращает list of (distance, metadata)
 
-        # 2. Формируем диалог
+        # 2. Определяем, найдены ли релевантные чанки
+        found = any(dist >= THRESHOLD for dist, _ in results)
+        sources = [{"title": m["title"], "text": m["text"][:200], "distance": float(d)} 
+                   for d, m in results if d >= THRESHOLD]
+
+        # 3. Формируем диалог
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": build_user_prompt(query, results)}
         ]
 
-        # 3. Запрос к модели
+        # 4. Запрос к модели
         print("⏳ Бот размышляет...")
         try:
-            raw_answer = ask_llm(messages)
+            answer = ask_llm(messages)
+            success = not any(phrase in answer.lower() for phrase in 
+                              ["не найдено", "нет информации", "не могу ответить", "неизвестно"]) \
+                      and len(answer) > 20
         except Exception as e:
-            raw_answer = f"Ошибка обращения к LLM: {str(e)}"
+            answer = f"Ошибка обращения к LLM: {str(e)}"
+            success = False
 
-        # 4. Пост-проверка
-        safe_answer = sanitize_response(raw_answer)
-
-        # 5. Вывод пользователю
+        # 5. Вывод ответа
         print("\n" + "="*60)
-        print(safe_answer)
+        print(answer)
         print("="*60)
 
-if __name__ == "__main__":
-    main()
+        # 6. Логирование
+        log_request(query, found, answer, sources, success)
