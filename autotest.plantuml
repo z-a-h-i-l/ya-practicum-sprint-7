@@ -1,0 +1,36 @@
+@startuml
+actor Пользователь as User
+participant "RAG Бот" as Bot
+participant "FAISS Index" as Faiss
+participant "LLM Server" as LLM
+participant "Логгер" as Log
+
+User -> Bot: вводит запрос
+Bot -> Bot: преобразует запрос в эмбеддинг (через Embed Server)
+
+alt Индекс отсутствует или пуст
+    Bot -> User: "Индекс не загружен"
+    Bot -> Log: запись об ошибке
+else Индекс загружен
+    Bot -> Faiss: поиск ближайших чанков
+    Faiss --> Bot: список (distance, metadata)
+    
+    alt Нет чанков с distance > порог
+        Bot -> User: "По вашему запросу ничего не найдено"
+        Bot -> Log: found_chunks=false
+    else Найдены чанки
+        Bot -> Bot: сборка промпта с Few-shot и CoT
+        Bot -> LLM: chat/completions с контекстом
+        LLM --> Bot: сгенерированный ответ
+        
+        alt Ошибка генерации (timeout, падение сервера)
+            Bot -> User: "Ошибка обращения к LLM"
+            Bot -> Log: error
+        else Успешный ответ
+            Bot -> Bot: пост‑фильтр (sanitize)
+            Bot -> User: отфильтрованный ответ
+            Bot -> Log: запись успешного запроса
+        end
+    end
+end
+@enduml

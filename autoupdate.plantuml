@@ -1,0 +1,35 @@
+@startuml
+actor Cron as "Планировщик\n(Cron / launchd)"
+
+rectangle "Источник данных" {
+    [championat.ru] as Champ
+}
+
+package "Сервер обновлений" {
+    [Скрипт парсинга\n(selenium + bs4)] as Parser
+    folder "dataset/" as Dataset
+    [Скрипт обновления индекса\n(add_to_faiss.py)] as Updater
+    database "FAISS Index\n(faiss_index_v5.bin)" as Index
+    database "Metadata\n(faiss_metadata_v5.json)" as Meta
+    note as LogNote
+        Логи (update.log)
+    end note
+}
+
+package "Серверы llama.cpp" {
+    [Эмбеддинг-сервер\n(порт 8080)] as EmbedServer
+    [LLM-сервер\n(порт 8081)] as LLMServer
+}
+
+Cron --> Parser : ежедневно / по расписанию
+Parser --> Champ : HTTP запросы
+Parser --> Dataset : сохраняет новые .md файлы
+Dataset --> Updater : читает только новые файлы
+Updater --> EmbedServer : запросы эмбеддингов\n(Document: …)
+EmbedServer --> Updater : векторы
+Updater --> Index : добавляет векторы в FAISS
+Updater --> Meta : дополняет метаданные
+Updater --> LogNote : записывает результаты
+LLMServer ..> Index : RAG-бот читает\nна этапе поиска
+LLMServer ..> Meta : RAG-бот читает\nметаданные
+@enduml
